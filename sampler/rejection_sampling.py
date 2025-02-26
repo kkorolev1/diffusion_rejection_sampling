@@ -1,54 +1,14 @@
 from collections import defaultdict
 import torch
-from tqdm.auto import trange, tqdm
+import numpy as np
+from tqdm.auto import trange
 
+from sampler.utils import sample_posterior, q_sample_next
 
-def extract(input, t, shape):
-    out = torch.gather(input, 0, t)
-    reshape = [shape[0]] + [1] * (len(shape) - 1)
-    out = out.reshape(*reshape)
+# netD(x_t, t, x_tp1.detach())
+# x_0_predict = netG(x_tp1.detach(), t, latent_z)
+# x_pos_sample = sample_posterior(pos_coeff, x_0_predict, x_tp1, t) 
 
-    return out
-
-
-def q_sample_tp1(pos_coeff, x_t, t):
-    sigmas = pos_coeff.betas**0.5
-    a_s = torch.sqrt(1 - pos_coeff.betas)
-
-    noise = torch.randn_like(x_t)
-    x_t_plus_one = (
-        extract(a_s, t, x_t.shape) * x_t + extract(sigmas, t, x_t.shape) * noise
-    )
-    return x_t_plus_one
-
-
-def sample_posterior(coefficients, x_0, x_t, t):
-
-    def q_posterior(x_0, x_t, t):
-        mean = (
-            extract(coefficients.posterior_mean_coef1, t, x_t.shape) * x_0
-            + extract(coefficients.posterior_mean_coef2, t, x_t.shape) * x_t
-        )
-        var = extract(coefficients.posterior_variance, t, x_t.shape)
-        log_var_clipped = extract(
-            coefficients.posterior_log_variance_clipped, t, x_t.shape
-        )
-        return mean, var, log_var_clipped
-
-    def p_sample(x_0, x_t, t):
-        mean, _, log_var = q_posterior(x_0, x_t, t)
-
-        noise = torch.randn_like(x_t)
-
-        nonzero_mask = 1 - (t == 0).type(torch.float32)
-
-        return (
-            mean + nonzero_mask[:, None, None, None] * torch.exp(0.5 * log_var) * noise
-        )
-
-    sample_x_pos = p_sample(x_0, x_t, t)
-
-    return sample_x_pos
 
 def repeat_tensor(x, new_batch_size):
     repeat_factor = (new_batch_size + x.size(0) - 1) // x.size(0)
@@ -129,7 +89,6 @@ def rejection_sample(
     n_time,
     x_init,
     opt,
-    reject_full_trajectory=False,
 ):
     x = x_init
     t = torch.full((x.shape[0],), n_time - 1, dtype=torch.int64, device=x.device)
@@ -144,7 +103,7 @@ def rejection_sample(
         accept_mask = rs_processor.get_accept_mask(x_new, x, t)
         x[accept_mask] = x_new[accept_mask]
         t[accept_mask] = t[accept_mask] - 1
-        if reject_full_trajectory:
+        if opt.reject_full_trajectory:
             x[~accept_mask] = torch.randn(((~accept_mask).sum(), *x_init.shape[1:]), dtype=x_init.dtype, device=x_init.device)
             t[~accept_mask] = torch.full(((~accept_mask).sum(),), n_time - 1, dtype=torch.int64, device=x.device)
         return x, t
@@ -170,26 +129,10 @@ def rejection_sample_reinit(
     x_init,
     opt,
 ):
-    # Iterative version    
-    # def reinit_loop(x, t):
-    #     cur_mask = torch.ones((t.shape[0],), dtype=bool, device=x.device)
-    #     while cur_mask.sum() > 0:
-    #         x_hat = q_sample_tp1(coefficients, x, t)
-    #         accept_mask = rs_processor.get_accept_mask(x, x_hat, t) | (t == n_time - 1)
-    #         x[cur_mask] = x_hat[cur_mask] # copy only x's that are in reinit regime
-    #         cur_mask = cur_mask & (~accept_mask)
-    #         t[cur_mask] = t[cur_mask] + 1
-    #     return x, t
-
-    # Recursive version
-    def reinit_loop(x, t):
-        x_hat = q_sample_tp1(coefficients, x, t)
-        accept_mask = rs_processor.get_accept_mask(x, x_hat, t) | (t == n_time - 1)
-        x[accept_mask] = x_hat[accept_mask]
-        if (~accept_mask).sum() > 0:
-            t[~accept_mask] = t[~accept_mask] + 1
-            x[~accept_mask], t[~accept_mask] = reinit_loop(x[~accept_mask], t[~accept_mask])
-        return x, t
+    def reinit(x, t, steps=1):
+        s = torch.clamp(t + steps, max=n_time)
+        x = q_sample_next(coefficients, x, t, s)
+        return x, s-1 #s-1, because in backward sampling we have shifted time
 
     def sample_loop(x, t):
         latent_z = torch.randn(x.shape[0], opt.nz, device=x.device)
@@ -199,7 +142,7 @@ def rejection_sample_reinit(
         x = x_new
         t[accept_mask] = t[accept_mask] - 1
         if (~accept_mask).sum() > 0:
-            x[~accept_mask], t[~accept_mask] = reinit_loop(x[~accept_mask], t[~accept_mask])
+            x[~accept_mask], t[~accept_mask] = reinit(x[~accept_mask], t[~accept_mask], opt.reinit_steps)
         return x, t
 
     x = x_init
@@ -218,41 +161,3 @@ def rejection_sample_reinit(
             t = t[~finished_mask]
             finished_samples += finished_mask.sum().item()
     return torch.cat(x_res).to(x_init.device)
-
-
-# def reinit(coefficients, generator, rs_processor, x_t, t, n_time, opt):
-#     x_tp1 = q_sample_tp1(coefficients, x_t, t) # don't need to pass t+1, because indices are shifted for reverse process
-#     accept_mask = rs_processor.get_accept_mask(x_t, x_tp1, t + 1) | (t == n_time - 1)
-#     if accept_mask.all():
-#         return x_tp1
-#     x_tp2 = reinit(coefficients, rs_processor, x_tp1, t + 1, n_time)
-#     return one_step_diffrs(coefficients, generator, rs_processor, x_tp2, t + 1, n_time, opt)
-
-# def one_step_diffrs(coefficients, generator, rs_processor, x_tp1, t, n_time, opt):
-#     x_new = None
-#     while x_new is None:
-#         latent_z = torch.randn(x_tp1.size(0), opt.nz, device=x_tp1.device)
-#         x_0 = generator(x_tp1, t, latent_z)
-#         x_t = sample_posterior(coefficients, x_0, x_tp1, t)
-#         accept_mask = rs_processor.get_accept_mask(x_t, x_tp1, t)
-#         if accept_mask[0]:
-#             x_new = x_t
-#         else:
-#             x_tp1 = reinit(coefficients, generator, rs_processor, x_t, t, n_time, opt)
-#     return x_new
-
-# def rejection_sample_reinit(
-#     coefficients,
-#     generator,
-#     rs_processor,
-#     n_time,
-#     x_init,
-#     opt,
-# ):
-#     x = x_init
-#     with torch.no_grad():
-#         for t_val in range(n_time - 1, -1, -1):
-#             t = torch.full((x.size(0),), t_val, dtype=torch.int64, device=x.device)
-#             x = one_step_diffrs(coefficients, generator, rs_processor, x, t, n_time, opt)
-#     return x
-
