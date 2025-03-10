@@ -50,8 +50,8 @@ class RejectionSamplingProcessor:
     def collect_from_dict(dict, time_tensor):
         return torch.tensor([dict[t.item()] for t in time_tensor], dtype=float, device=time_tensor.device)
 
-    @torch.no_grad()
     @classmethod
+    @torch.no_grad()
     def recalculate_log_ratio(cls, coefficients, generator, discriminator, n_time, opt, device, n_runs=1):
         log_ratio_dict = defaultdict(list)
 
@@ -78,7 +78,7 @@ class RejectionSamplingProcessor:
         for t, lst in log_ratio_dict.items():
             log_ratio_dict[t] = torch.cat(lst).cpu()
         
-        return cls(discriminator, log_ratio_dict)
+        return cls(discriminator, log_ratio_dict, device)
 
 
 @torch.no_grad

@@ -152,7 +152,7 @@ if __name__ == "__main__":
     parser.add_argument("--reinit_steps", type=int, default=1, help="how many steps forward during reinitialization")
     parser.add_argument("--num_samples", type=int, default=50_000)
     parser.add_argument("--g_epoch", type=int, default=1200)
-    parser.add_argument("--d_epoch", type=int, default=1000)
+    parser.add_argument("--d_epoch", type=int, default=1400)
     parser.add_argument("--num_channels", type=int, default=3, help="channel of image")
     parser.add_argument(
         "--centered", action="store_false", default=True, help="-1,1 scale"
