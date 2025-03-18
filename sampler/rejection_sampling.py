@@ -69,11 +69,13 @@ class RejectionSamplingProcessor:
                 x = x_new.detach()
             return x
 
-        for _ in trange(n_runs):
-            x_1 = torch.randn(
+        for i in trange(n_runs):
+            if i % 50 == 0:
+                print(i)
+            x_T = torch.randn(
                 opt.batch_size, opt.num_channels, opt.image_size, opt.image_size
             ).to(device)
-            _ = sample_loop(x_1)
+            _ = sample_loop(x_T)
 
         for t, lst in log_ratio_dict.items():
             log_ratio_dict[t] = torch.cat(lst).cpu()
@@ -90,12 +92,6 @@ def rejection_sample(
     x_init,
     opt,
 ):
-    x = x_init
-    t = torch.full((x.shape[0],), n_time - 1, dtype=torch.int64, device=x.device)
-
-    finished_samples = 0
-    total_samples = x_init.shape[0]
-
     def sample_loop(x, t):
         latent_z = torch.randn(x.shape[0], opt.nz, device=x.device)
         x_0 = generator(x, t, latent_z)
@@ -108,6 +104,11 @@ def rejection_sample(
             t[~accept_mask] = torch.full(((~accept_mask).sum(),), n_time - 1, dtype=torch.int64, device=x.device)
         return x, t
 
+    x = x_init
+    t = torch.full((x.shape[0],), n_time - 1, dtype=torch.int64, device=x.device)
+
+    finished_samples = 0
+    total_samples = x_init.shape[0]
     x_res = []
     while finished_samples < total_samples:
         x, t = sample_loop(x, t)
@@ -132,7 +133,7 @@ def rejection_sample_reinit(
     def reinit(x, t, steps=1):
         s = torch.clamp(t + steps, max=n_time)
         x = q_sample_next(coefficients, x, t, s)
-        return x, s-1 #s-1, because in backward sampling we have shifted time
+        return x, s-1
 
     def sample_loop(x, t):
         latent_z = torch.randn(x.shape[0], opt.nz, device=x.device)
@@ -140,7 +141,8 @@ def rejection_sample_reinit(
         x_new = sample_posterior(coefficients, x_0, x, t)
         accept_mask = rs_processor.get_accept_mask(x_new, x, t)
         x = x_new
-        t[accept_mask] = t[accept_mask] - 1
+        t = t - 1
+        # t[accept_mask] = t[accept_mask] - 1
         if (~accept_mask).sum() > 0:
             x[~accept_mask], t[~accept_mask] = reinit(x[~accept_mask], t[~accept_mask], opt.reinit_steps)
         return x, t
@@ -150,14 +152,13 @@ def rejection_sample_reinit(
 
     finished_samples = 0
     total_samples = x_init.shape[0]
-
     x_res = []
     while finished_samples < total_samples:
         x, t = sample_loop(x, t)
         finished_mask = t < 0
         if finished_mask.sum() > 0:
-            x_res.append(x[finished_mask].cpu())
+            x_res.append(x[finished_mask])
             x = x[~finished_mask]
             t = t[~finished_mask]
-            finished_samples += finished_mask.sum().item()
-    return torch.cat(x_res).to(x_init.device)
+            finished_samples += finished_mask.sum()
+    return torch.cat(x_res)

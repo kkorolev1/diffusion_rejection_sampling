@@ -52,7 +52,7 @@ def sample_and_test(args):
     load_checkpoint(
         netG,
         "./saved_info/dd_gan/{}/{}/netG_{}.pth".format(
-            args.dataset, args.exp, args.g_epoch
+            args.dataset, "ddgan_cifar10_exp1", args.g_epoch
         ),
         device,
     )
@@ -66,7 +66,7 @@ def sample_and_test(args):
             t_emb_dim=args.t_emb_dim,
             act=nn.LeakyReLU(0.2),
         ).to(device)
-        netD.load_state_dict(torch.load("./saved_info/dd_gan/{}/{}/netD_{}.pth".format(args.dataset, args.exp, args.d_epoch)))
+        netD.load_state_dict(torch.load("./saved_info/dd_gan/{}/{}/netD_{}.pth".format(args.dataset, "ddgan_cifar10_exp1", args.d_epoch)))
         netD.eval()
         print(f"Loading Discriminator from {args.d_epoch} epoch")
         print(f"Rejection Sampling is enabled: {args.enable_reinit=}, {args.constant_quantile=}, {args.reject_full_trajectory=}, {args.reinit_steps=}")
@@ -74,8 +74,9 @@ def sample_and_test(args):
     pos_coeff = Posterior_Coefficients(args, device)
     iters_needed = args.num_samples // args.batch_size
 
-    save_dir = "./generated_samples/{}".format(args.dataset)
-
+    save_dir = "./generated_samples/{}".format(args.exp)
+    # os.rmdir(save_dir)
+    
     if not os.path.exists(save_dir):
         os.makedirs(save_dir)
 
@@ -85,35 +86,35 @@ def sample_and_test(args):
         rs_processor = RejectionSamplingProcessor(netD, log_ratio_dict, device, constant_quantile=args.constant_quantile)
 
     if args.compute_fid:
-        for i in trange(iters_needed):
-            with torch.no_grad():
-                x_t_1 = torch.randn(
-                    args.batch_size, args.num_channels, args.image_size, args.image_size
-                ).to(device)
-                if args.use_rejection_sampling:
-                    fn_sample = rejection_sample_reinit if args.enable_reinit else rejection_sample
-                    fake_sample = fn_sample(
-                        pos_coeff,
-                        netG,
-                        rs_processor,
-                        args.num_timesteps,
-                        x_t_1,
-                        args,
-                    )
-                else:
-                    fake_sample = ddpm_sample(
-                        pos_coeff, netG, args.num_timesteps, x_t_1, args
-                    )
+        print(f"Images are {args.precomputed=}")
+        if not args.precomputed:
+            for i in trange(iters_needed):
+                with torch.no_grad():
+                    x_t_1 = torch.randn(
+                        args.batch_size, args.num_channels, args.image_size, args.image_size
+                    ).to(device)
+                    if args.use_rejection_sampling:
+                        fn_sample = rejection_sample_reinit if args.enable_reinit else rejection_sample
+                        fake_sample = fn_sample(
+                            pos_coeff,
+                            netG,
+                            rs_processor,
+                            args.num_timesteps,
+                            x_t_1,
+                            args,
+                        )
+                    else:
+                        fake_sample = ddpm_sample(
+                            pos_coeff, netG, args.num_timesteps, x_t_1, args
+                        )
 
-                fake_sample = to_range_0_1(fake_sample)
-                for j, x in enumerate(fake_sample):
-                    index = i * args.batch_size + j
-                    torchvision.utils.save_image(
-                        x,
-                        "./generated_samples/{}/{}.jpg".format(
-                            args.dataset, index
-                        ),
-                    )
+                    fake_sample = to_range_0_1(fake_sample)
+                    for j, x in enumerate(fake_sample):
+                        index = i * args.batch_size + j
+                        torchvision.utils.save_image(
+                            x,
+                            "{}/{}.jpg".format(save_dir, index),
+                        )
 
         paths = [save_dir, real_img_dir]
 
@@ -153,6 +154,7 @@ if __name__ == "__main__":
     parser.add_argument("--num_samples", type=int, default=50_000)
     parser.add_argument("--g_epoch", type=int, default=1200)
     parser.add_argument("--d_epoch", type=int, default=1400)
+    parser.add_argument("--precomputed", action="store_true", default=False, help="whether fake images are precomputed")
     parser.add_argument("--num_channels", type=int, default=3, help="channel of image")
     parser.add_argument(
         "--centered", action="store_false", default=True, help="-1,1 scale"
